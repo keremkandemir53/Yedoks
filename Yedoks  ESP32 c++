@@ -1,0 +1,179 @@
+#include <WiFi.h>
+#include <DHT.h>
+
+#define DHTPIN 25      // DHT11 Sensörünün bağlı olduğu pin
+#define DHTTYPE DHT11  // Sensör tipi
+DHT dht(DHTPIN, DHTTYPE);
+
+#define RAIN_SENSOR_PIN 32 // HW-028 Yağmur Sensörü bağlı pin (dijital pin 4)
+
+const char* ssid = "RoketAtar";
+const char* password = "77911G20";
+
+WiFiServer server(80);
+String pin32State = "off";
+String pin33State = "off";
+const int output32 = 18;
+const int output33 = 12;
+
+float soilMoisture = 50.0;  // Simulated soil moisture
+bool isRaining = false;     // Yağmur durumu
+
+void setup() {
+  Serial.begin(115200);
+  dht.begin();
+
+  pinMode(output32, OUTPUT);
+  digitalWrite(output32, LOW);
+  pinMode(output33, OUTPUT);
+  digitalWrite(output33, LOW);
+
+  pinMode(RAIN_SENSOR_PIN, INPUT);  // Yağmur sensörünü giriş olarak ayarla
+
+
+  WiFi.begin(ssid, password);
+  Serial.print("Connecting to WiFi");
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(500);
+    Serial.print(".");
+  }
+
+
+  Serial.println("\nWiFi connected.");
+  Serial.println(WiFi.localIP());
+  server.begin();
+}
+
+void loop() {
+  WiFiClient client = server.available();
+  if (client) {
+    String request = client.readStringUntil('\r');
+    client.flush();
+
+    // Yağmur sensörünü oku
+    isRaining = digitalRead(RAIN_SENSOR_PIN) == HIGH;
+    if (isRaining != true && isRaining != false) {
+      isRaining = false; // Varsayılan olarak "yağmur yok" kabul et
+    }
+
+    if (request.indexOf("GET /data") >= 0) {  // AJAX ile sıcaklık, nem ve GPIO durumu çekme
+      float temperature = dht.readTemperature();
+      float humidity = dht.readHumidity();
+
+      if (isnan(temperature)) {
+        temperature = -999.0; // Geçersiz sıcaklık için varsayılan değer
+      }
+
+      if (isnan(humidity)) {
+        humidity = -999.0; // Geçersiz nem için varsayılan değer
+      }
+
+      client.println("HTTP/1.1 200 OK");
+      client.println("Content-Type: application/json; charset=UTF-8");
+      client.println("Connection: close");
+      client.println();
+      client.print("{\"temperature\":");
+      client.print(isnan(temperature) ? 0 : temperature);
+      client.print(", \"humidity\":");
+      client.print(isnan(humidity) ? 0 : humidity);
+      client.print(", \"soilMoisture\":");
+      client.print(soilMoisture);
+      client.print(", \"isRaining\":");
+      client.print(isRaining ? "true" : "false");
+      client.print(", \"gpio32State\":\"");
+      client.print(pin32State);
+      client.print("\", \"gpio33State\":\"");
+      client.print(pin33State);
+      client.println("\"}");
+    } 
+    else if (request.indexOf("GET /toggle32") >= 0) {  // GPIO 32 durumunu değiştir
+      if (pin32State == "off") {
+        pin32State = "on";
+        digitalWrite(output32, HIGH);
+      } else {
+        pin32State = "off";
+        digitalWrite(output32, LOW);
+      }
+      client.println("HTTP/1.1 200 OK");
+      client.println("Content-Type: text/plain; charset=UTF-8");
+      client.println("Connection: close");
+      client.println();
+      client.println(pin32State);
+    } 
+    else if (request.indexOf("GET /toggle33") >= 0) {  // GPIO 33 durumunu değiştir
+      if (pin33State == "off") {
+        pin33State = "on";
+        digitalWrite(output33, HIGH);
+      } else {
+        pin33State = "off";
+        digitalWrite(output33, LOW);
+      }
+      client.println("HTTP/1.1 200 OK");
+      client.println("Content-Type: text/plain; charset=UTF-8");
+      client.println("Connection: close");
+      client.println();
+      client.println(pin33State);
+    } 
+    else { // Ana sayfa HTML
+      client.println("HTTP/1.1 200 OK");
+      client.println("Content-type:text/html; charset=UTF-8");
+      client.println("Connection: close");
+      client.println();
+
+      client.println("<!DOCTYPE html><html>");
+      client.println("<head>");
+      client.println("<meta charset=\"UTF-8\">");
+      client.println("<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">");
+      client.println("<script>");
+      client.println("function getData() {");
+      client.println("  var xhttp = new XMLHttpRequest();");
+      client.println("  xhttp.onreadystatechange = function() {");
+      client.println("    if (this.readyState == 4 && this.status == 200) {");
+      client.println("      var data = JSON.parse(this.responseText);");
+      client.println("      document.getElementById('temp').innerHTML = data.temperature == 0 ? 'Veri okunamadı' : data.temperature + ' °C';");
+      client.println("      document.getElementById('hum').innerHTML = data.humidity == 0 ? 'Veri okunamadı' : data.humidity + ' %';");
+      client.println("      document.getElementById('soil').innerHTML = data.soilMoisture + ' %';");
+      client.println("      document.getElementById('gpioState32').innerHTML = data.gpio32State.toUpperCase();");
+      client.println("      document.getElementById('gpioState33').innerHTML = data.gpio33State.toUpperCase();");
+      client.println("      document.getElementById('gpioButton32').innerHTML = data.gpio32State == 'on' ? 'Kapat' : 'Aç';");
+      client.println("      document.getElementById('gpioButton33').innerHTML = data.gpio33State == 'on' ? 'Kapat' : 'Aç';");
+      client.println("      var rainStatus = data.isRaining ? 'Yok' : 'Var';");
+      client.println("      document.getElementById('rainstat').innerHTML = 'Yağmur: ' + rainStatus;");
+      client.println("    }");
+      client.println("  };");
+      client.println("  xhttp.open('GET', '/data', true);");
+      client.println("  xhttp.send();");
+      client.println("}");
+      client.println("function toggleGPIO(pin) {");
+      client.println("  var xhttp = new XMLHttpRequest();");
+      client.println("  xhttp.onreadystatechange = function() {");
+      client.println("    if (this.readyState == 4 && this.status == 200) {");
+      client.println("      getData();");
+      client.println("    }");
+      client.println("  };");
+      client.println("  xhttp.open('GET', '/toggle' + pin, true);");
+      client.println("  xhttp.send();");
+      client.println("}");
+      client.println("setInterval(getData, 2000);");
+      client.println("</script>");
+      client.println("<style>");
+      client.println("html { font-family: Helvetica; text-align: center; }");
+      client.println(".button { background-color: #4CAF50; border: none; color: white; padding: 16px 40px; font-size: 30px; cursor: pointer; }");
+      client.println(".button2 { background-color: #555555; }");
+      client.println("</style>");
+      client.println("</head>");
+      client.println("<body><h1 style=\"color:blue;\">Tübitak 2209-A</h1>");
+      client.println("<p>GPIO 32 - Durum: <span id='gpioState32'>OFF</span></p>");
+      client.println("<button id='gpioButton32' class='button' onclick='toggleGPIO(32)'>Aç</button>");
+      client.println("<p>GPIO 33 - Durum: <span id='gpioState33'>OFF</span></p>");
+      client.println("<button id='gpioButton33' class='button' onclick='toggleGPIO(33)'>Aç</button>");
+      client.println("<p>Sıcaklık: <span id='temp'>--</span></p>");
+      client.println("<p>Nem: <span id='hum'>--</span></p>");
+      client.println("<p>Toprak Nem: <span id='soil'>--</span></p>");
+      client.println("<p><span id='rainstat'>Yağmur : Yok</span></p>");
+      client.println("</body></html>");
+      client.println();
+    }
+    client.stop();
+  }
+}
